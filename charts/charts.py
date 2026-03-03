@@ -10,147 +10,142 @@ def base_theme():
         }
     }
 
-def chart_hook_temp_over_time(df: pd.DataFrame) -> alt.Chart:
+def _team_season_agg(df: pd.DataFrame) -> pd.DataFrame:
     return (
+        df.groupby(["Season", "Team"], as_index=False)
+          .agg(Pts=("Pts", "sum"), GF=("GF", "sum"), GA=("GA", "sum"))
+          .assign(GD=lambda d: d["GF"] - d["GA"])
+    )
+
+def chart_team_scatter(df: pd.DataFrame) -> alt.Chart:
+    team_season = _team_season_agg(df)
+    seasons = sorted(team_season["Season"].unique().tolist())
+
+    selectSeason = alt.param(
+        name="Select_Season",
+        bind=alt.binding_select(options=seasons, name="Season: "),
+        value=seasons[0] if len(seasons) else None
+    )
+
+    q1 = (
+        alt.Chart(team_season)
+        .transform_filter(alt.datum.Season == selectSeason)
+        .mark_circle(size=80)
+        .encode(
+            x=alt.X("Pts:Q", title="Points"),
+            y=alt.Y("Team:N", sort="ascending", title="Team"),
+            tooltip=["Season:N", "Team:N", "Pts:Q", "GF:Q", "GA:Q", "GD:Q"]
+        )
+        .add_params(selectSeason)
+        .properties(width=520, height=520, title="Team performance by season (dropdown)")
+    )
+
+    return q1
+
+def chart_linked_scatter_to_attack(df: pd.DataFrame) -> alt.Chart:
+    team_season = _team_season_agg(df)
+    seasons = sorted(team_season["Season"].unique().tolist())
+
+    selectSeason = alt.param(
+        name="Select_Season",
+        bind=alt.binding_select(options=seasons, name="Season: "),
+        value=seasons[0] if len(seasons) else None
+    )
+
+    default_team = sorted(team_season["Team"].unique().tolist())[0] if len(team_season) else None
+
+    teamSelect = alt.selection_point(
+        fields=["Team"],
+        empty=True,
+        value=[{"Team": default_team}] if default_team is not None else None
+    )
+
+    q1 = (
+        alt.Chart(team_season)
+        .transform_filter(alt.datum.Season == selectSeason)
+        .mark_circle(size=80)
+        .encode(
+            x=alt.X("Pts:Q", title="Points"),
+            y=alt.Y("Team:N", sort="ascending", title="Team"),
+            opacity=alt.condition(teamSelect, alt.value(1), alt.value(0.25)),
+            tooltip=["Season:N", "Team:N", "Pts:Q", "GF:Q", "GA:Q", "GD:Q"]
+        )
+        .add_params(selectSeason, teamSelect)
+        .properties(width=520, height=520, title="Team performance by season (dropdown + click team)")
+    )
+
+    q2 = (
         alt.Chart(df)
+        .transform_filter(alt.datum.Season == selectSeason)
+        .transform_filter(teamSelect)
+        .transform_window(
+            rolling_goals="mean(GF)",
+            frame=[-3, 0],
+            groupby=["Season", "Team", "Venue"]
+        )
         .mark_line()
         .encode(
-            x=alt.X("date:T", title="Date"),
-            y=alt.Y("temp_max:Q", title="Daily max temp (°C)"),
-            tooltip=[alt.Tooltip("date:T"), alt.Tooltip("temp_max:Q", format=".1f")],
+            x=alt.X("MatchNum:Q", title="Match (ordered by date)"),
+            y=alt.Y("rolling_goals:Q", title="Rolling avg goals (4-match)"),
+            color=alt.Color("Venue:N", title="Venue"),
+            tooltip=["Season:N", "Team:N", "Venue:N", "MatchNum:Q", "rolling_goals:Q"]
         )
-        .properties(height=320)
+        .properties(width=520, height=300, title="Selected team attacking performance over time")
     )
 
-def chart_context_seasonality(df: pd.DataFrame) -> alt.Chart:
-    month_order = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
-    return (
-        alt.Chart(df)
-        .mark_boxplot()
-        .encode(
-            x=alt.X("month_name:N", title="Month", sort=month_order),
-            y=alt.Y("temp_max:Q", title="Daily max temp (°C)"),
-        )
-        .properties(height=320)
+    return (q1 | q2)
+
+def chart_home_away_bars(df: pd.DataFrame) -> alt.Chart:
+    season_options = sorted(df["Season"].unique().tolist())
+
+    selectSeason = alt.param(
+        name="Select_Season_Q3",
+        bind=alt.binding_select(options=season_options, name="Season: "),
+        value=season_options[0] if len(season_options) else None
     )
 
-def chart_surprise_extremes(df: pd.DataFrame) -> alt.Chart:
-    q = float(df["temp_max"].quantile(0.99))
-    df2 = df.copy()
-    df2["extreme"] = df2["temp_max"] >= q
-
-    base = (
-        alt.Chart(df2)
-        .mark_point(filled=True, size=35)
-        .encode(
-            x=alt.X("date:T", title="Date"),
-            y=alt.Y("temp_max:Q", title="Daily max temp (°C)"),
-            color=alt.condition("datum.extreme", alt.value("red"), alt.value("lightgray")),
-            tooltip=[alt.Tooltip("date:T"), alt.Tooltip("temp_max:Q", format=".1f")],
-        )
-        .properties(height=320)
+    pts = (
+        df.groupby(["Season", "Team", "Venue"], as_index=False)
+          .agg(Pts=("Pts", "sum"))
     )
 
-    rule = alt.Chart(pd.DataFrame({"q": [q]})).mark_rule(strokeDash=[6, 4]).encode(y="q:Q")
-    return base + rule
-
-def chart_explain_precip_vs_temp(df: pd.DataFrame) -> alt.Chart:
-    return (
-        alt.Chart(df)
-        .mark_point(opacity=0.45)
-        .encode(
-            x=alt.X("precipitation:Q", title="Precipitation (in)"),
-            y=alt.Y("temp_max:Q", title="Daily max temp (°C)"),
-            tooltip=[
-                "date:T",
-                alt.Tooltip("precipitation:Q", format=".2f"),
-                alt.Tooltip("temp_max:Q", format=".1f"),
-            ],
-        )
-        .properties(height=320)
+    wide = (
+        pts.pivot_table(index=["Season", "Team"], columns="Venue", values="Pts", fill_value=0)
+           .reset_index()
+           .rename_axis(None, axis=1)
     )
 
-def chart_dashboard(df: pd.DataFrame) -> alt.Chart:
-    weather_types = sorted(df["weather"].unique())
+    if "Home" not in wide.columns:
+        wide["Home"] = 0
+    if "Away" not in wide.columns:
+        wide["Away"] = 0
 
-    w_select = alt.selection_point(
-        fields=["weather"],
-        bind=alt.binding_select(options=weather_types, name="Weather: "),
-    )
-    brush = alt.selection_interval(encodings=["x"], name="Time window")
+    wide["Diff"] = wide["Home"] - wide["Away"]
 
-    line = (
-        alt.Chart(df)
-        .mark_line()
-        .encode(
-            x=alt.X("date:T", title="Date"),
-            y=alt.Y("temp_max:Q", title="Daily max temp (°C)"),
-            color=alt.Color("weather:N", title="Weather"),
-            tooltip=["date:T", "weather:N", alt.Tooltip("temp_max:Q", format=".1f")],
-        )
-        .add_params(w_select, brush)
-        .transform_filter(w_select)
-        .properties(height=260)
-    )
-
-    hist = (
-        alt.Chart(df)
+    bars = (
+        alt.Chart(pts)
+        .transform_filter(alt.datum.Season == selectSeason)
         .mark_bar()
         .encode(
-            x=alt.X("temp_max:Q", bin=alt.Bin(maxbins=30), title="Daily max temp (°C)"),
-            y=alt.Y("count():Q", title="Days"),
-            tooltip=[alt.Tooltip("count():Q", title="Days")],
+            y=alt.Y("Team:N", sort="ascending", title="Team"),
+            x=alt.X("Pts:Q", title="Points"),
+            color=alt.Color("Venue:N", title="Venue"),
+            tooltip=["Season:N", "Team:N", "Venue:N", "Pts:Q"]
         )
-        .transform_filter(w_select)
-        .transform_filter(brush)
-        .properties(height=260)
+        .add_params(selectSeason)
+        .properties(width=520, height=500, title="Home vs away points by team")
     )
 
-    return alt.vconcat(line, hist).resolve_scale(color="independent")
-
-
-def chart_seasonality_boxplot(df: pd.DataFrame) -> alt.Chart:
-    df = df.copy()
-    df["month"] = df["date"].dt.month_name()
-
-    month_order = [
-        "January","February","March","April","May","June",
-        "July","August","September","October","November","December"
-    ]
-
-    return (
-        alt.Chart(df)
-        .mark_boxplot()
+    diff = (
+        alt.Chart(wide)
+        .transform_filter(alt.datum.Season == selectSeason)
+        .mark_bar()
         .encode(
-            x=alt.X("month:N", sort=month_order, title="Month"),
-            y=alt.Y("temp_max:Q", title="Daily Max Temp (°C)")
+            y=alt.Y("Team:N", sort="ascending", title="Team"),
+            x=alt.X("Diff:Q", title="HomePts - AwayPts"),
+            tooltip=["Season:N", "Team:N", "Home:Q", "Away:Q", "Diff:Q"]
         )
-        .properties(height=300)
+        .properties(width=380, height=500, title="Home advantage (HomePts - AwayPts)")
     )
 
-
-def chart_temp_over_time_by_weather(df: pd.DataFrame) -> alt.Chart:
-    df = df.copy()
-
-    weather_options = sorted(df["weather"].dropna().unique().tolist())
-
-    weather_select = alt.selection_point(
-        fields=["weather"],
-        bind=alt.binding_select(options=weather_options, name="Weather: "),
-        value=weather_options[0] if len(weather_options) > 0 else None,
-    )
-
-    base = (
-        alt.Chart(df)
-        .mark_line()
-        .encode(
-            x=alt.X("date:T", title="Date"),
-            y=alt.Y("temp_max:Q", title="Daily Max Temp (°C)")
-        )
-        .properties(height=300)
-    )
-
-    chart = base.add_params(weather_select).transform_filter(weather_select)
-
-    return chart
-
+    return (bars | diff)
