@@ -8,7 +8,3 @@ The analysis focuses on:
 - differences between home and away performance
 
 The visualization is implemented using Altair and deployed as an interactive Streamlit app.
-
-## Run locally
-pip install -r requirements.txt
-streamlit run app.py
